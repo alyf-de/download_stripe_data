@@ -22,7 +22,7 @@ def main(year_month: str):
 	from_timestamp, to_timestamp = get_timestamps(year_month, TIMEZONE)
 
 	download_invoices(from_timestamp, to_timestamp)
-	download_report("balance.summary.1", from_timestamp, to_timestamp)
+	download_report("balance.summary.1", "Saldenübersicht", from_timestamp, to_timestamp)
 
 
 def get_timestamps(year_month: str, tz: str) -> tuple[int, int]:
@@ -67,7 +67,7 @@ def download_invoices(from_timestamp: int, to_timestamp: int):
 		target_path.write_bytes(response.content)
 
 
-def download_report(report_type: str, from_timestamp: int, to_timestamp: int):
+def download_report(report_type: str, report_title: str, from_timestamp: int, to_timestamp: int):
 	print(f"Creating report {report_type}")
 	report_run = ReportRun.create(
 		report_type=report_type,
@@ -93,8 +93,6 @@ def download_report(report_type: str, from_timestamp: int, to_timestamp: int):
 	)
 	response = requests.get(file_link.url)
 	response.raise_for_status()
-
-	report_title = report_type.replace(".", " ").title()
 
 	month_year = datetime.fromtimestamp(to_timestamp).strftime("%B %Y")
 	nowdate = datetime.now().strftime("%Y-%m-%d")
