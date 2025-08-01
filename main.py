@@ -49,7 +49,7 @@ def download_invoices(from_timestamp: int, to_timestamp: int):
 			"limit": 100,
 		}
 	):
-		customer_name = invoice["customer_name"]
+		customer_name = invoice["customer_name"].replace("/", "")
 		invoice_number = invoice["number"]
 		pdf_url = invoice["invoice_pdf"]
 		invoice_timestamp = invoice["effective_at"]
