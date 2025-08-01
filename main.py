@@ -85,7 +85,7 @@ def download_report(report_type: str, report_title: str, from_timestamp: int, to
 
 		print(f"Report {report_type} is {report_run.status}")
 		report_run = ReportRun.retrieve(report_run.id)
-		time.sleep(1)
+		time.sleep(5)
 
 	print(f"Downloading report {report_type}")
 	file_link = stripe.FileLink.create(
