@@ -96,7 +96,7 @@ def download_report(report_type: str, report_title: str, from_timestamp: int, to
 
 	month_year = datetime.fromtimestamp(to_timestamp).strftime("%B %Y")
 	nowdate = datetime.now().strftime("%Y-%m-%d")
-	file_name = f"{nowdate} - Stripe - {report_title} - {month_year}.csv"
+	file_name = f"{nowdate} Stripe Payments Europe Ltd - {report_title} - {month_year}.csv"
 
 	target_path = Path("~/Downloads").expanduser() / file_name
 	target_path.write_bytes(response.content)
