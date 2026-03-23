@@ -7,6 +7,7 @@ import sys
 import time
 from dataclasses import dataclass
 from datetime import date, datetime
+from getpass import getpass
 from pathlib import Path
 from typing import Sequence
 
@@ -42,6 +43,8 @@ def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="download-stripe-invoices",
         description="Download Stripe invoice PDFs and monthly reports.",
+        epilog=f"Other commands:\n  setup    Create or update {ENV_FILE}",
+        formatter_class=argparse.RawDescriptionHelpFormatter,
     )
     parser.add_argument(
         "--version",
@@ -62,11 +65,23 @@ def build_parser() -> argparse.ArgumentParser:
     return parser
 
 
+def build_setup_parser() -> argparse.ArgumentParser:
+    return argparse.ArgumentParser(
+        prog="download-stripe-invoices setup",
+        description=f"Create or update {ENV_FILE} by prompting for TIMEZONE and STRIPE_API_KEY.",
+    )
+
+
 def main(argv: Sequence[str] | None = None) -> int:
-    args = build_parser().parse_args(argv)
+    argv = list(argv) if argv is not None else sys.argv[1:]
 
     try:
-        run(args.year_month, output_dir=args.output_dir)
+        if argv and argv[0] == "setup":
+            build_setup_parser().parse_args(argv[1:])
+            run_setup()
+        else:
+            args = build_parser().parse_args(argv)
+            run(args.year_month, output_dir=args.output_dir)
     except (RuntimeError, StripeError, ValueError, requests.RequestException) as exc:
         print(f"Error: {exc}", file=sys.stderr)
         return 1
@@ -117,6 +132,61 @@ def load_settings() -> Settings:
         )
 
     return Settings(timezone_name=timezone_name, api_key=api_key)
+
+
+def run_setup() -> None:
+    config = dotenv_values(ENV_FILE) if ENV_FILE.is_file() else {}
+
+    try:
+        timezone_name = prompt_timezone(config.get("TIMEZONE") or "Europe/Berlin")
+        api_key = prompt_api_key(config.get("STRIPE_API_KEY"))
+    except (EOFError, KeyboardInterrupt) as exc:
+        raise ValueError("Setup cancelled.") from exc
+
+    save_settings(Settings(timezone_name=timezone_name, api_key=api_key))
+    print(f"Saved configuration to {ENV_FILE}")
+
+
+def prompt_timezone(default: str | None = None) -> str:
+    suffix = f" [{default}]" if default else ""
+
+    while True:
+        value = input(f"Timezone{suffix}: ").strip() or default
+        if not value:
+            print("Timezone is required.")
+            continue
+
+        try:
+            get_timezone(value)
+        except ValueError as exc:
+            print(exc)
+            continue
+
+        return value
+
+
+def prompt_api_key(default: str | None = None) -> str:
+    prompt = "Stripe API key"
+    if default:
+        prompt += " [leave blank to keep existing]"
+    prompt += ": "
+
+    while True:
+        value = getpass(prompt).strip()
+        if value:
+            return value
+        if default:
+            return default
+
+        print("Stripe API key is required.")
+
+
+def save_settings(settings: Settings) -> None:
+    ENV_FILE.parent.mkdir(parents=True, exist_ok=True)
+    ENV_FILE.write_text(
+        f"TIMEZONE={settings.timezone_name}\nSTRIPE_API_KEY={settings.api_key}\n",
+        encoding="utf-8",
+    )
 
 
 def get_timestamps(year_month: str, tz_name: str) -> tuple[int, int]:
