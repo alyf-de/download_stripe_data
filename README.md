@@ -1,4 +1,4 @@
-Python CLI for downloading invoice PDFs and reports from Stripe.
+Python CLI for downloading invoice PDFs and monthly reconciliation CSV reports from Stripe.
 
 ## Install
 
@@ -35,7 +35,14 @@ Environment variables override values from the file.
 stripe-helper download 01/2025
 ```
 
-This saves invoices and the report into the current directory by default.
+This saves invoices and two CSV reports into the current directory by default.
+
+The exported CSVs include:
+
+- Stripe's `balance.summary.1` monthly balance summary, so the starting and ending Stripe balance is visible
+- Stripe's `balance_change_from_activity.itemized.7` payment reconciliation export, combining `reporting_category=charge` and `reporting_category=refund`, so customer payments and refunds can be matched against receivables from the downloaded invoices
+
+This is intended to be run once per month for the previous month.
 
 Pass a target folder as the second argument to save somewhere else:
 

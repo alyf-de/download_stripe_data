@@ -1,12 +1,13 @@
 from __future__ import annotations
 
-import calendar
+import csv
 import os
 import sys
 import time
 from dataclasses import dataclass
 from datetime import date, datetime
 from getpass import getpass
+from io import StringIO
 from pathlib import Path
 from typing import Annotated, Sequence
 
@@ -27,8 +28,22 @@ except AttributeError:  # pragma: no cover - compatibility with older SDK releas
 
 
 ENV_FILE = Path("~/.download-stripe-invoices/.env").expanduser()
-DEFAULT_REPORT_TYPE = "balance.summary.1"
-DEFAULT_REPORT_TITLE = "Saldenübersicht"
+SUMMARY_REPORT_TYPE = "balance.summary.1"
+SUMMARY_REPORT_TITLE = "Saldenübersicht"
+SUMMARY_REPORT_PARAMETERS: dict[str, str | list[str]] = {}
+PAYMENT_REPORT_TYPE = "balance_change_from_activity.itemized.7"
+PAYMENT_REPORT_TITLE = "Zahlungsabgleich"
+PAYMENT_REPORT_CATEGORIES = ("charge", "refund")
+PAYMENT_REPORT_PARAMETERS = {
+    "columns": [
+        "available_on",
+        "customer_name",
+        "invoice_number",
+        "payment_method_type",
+        "currency",
+        "gross",
+    ],
+}
 REQUEST_TIMEOUT_SECONDS = 60
 
 
@@ -44,8 +59,8 @@ app = typer.Typer(
     context_settings={"help_option_names": ["-h", "--help"]},
     rich_markup_mode="markdown",
     help=(
-        "Download Stripe invoice PDFs and monthly reports.\n\n"
-        "Use `download` to export a month and `setup` to manage local credentials."
+        "Download Stripe invoice PDFs and monthly reconciliation CSV reports.\n\n"
+        "Use `download` to export a month of invoices, a Stripe balance summary, and a payment reconciliation report."
     ),
 )
 
@@ -115,27 +130,38 @@ def main(argv: Sequence[str] | None = None) -> None:
 
 def run(year_month: str, output_dir: Path | None = None) -> None:
     settings = load_settings()
-    from_timestamp, to_timestamp = get_timestamps(year_month, settings.timezone_name)
+    interval_start, interval_end = get_month_bounds(year_month, settings.timezone_name)
     output_dir = output_dir.expanduser() if output_dir else Path.cwd()
     output_dir.mkdir(parents=True, exist_ok=True)
 
     invoice_count = download_invoices(
-        from_timestamp=from_timestamp,
-        to_timestamp=to_timestamp,
+        interval_start=interval_start,
+        interval_end=interval_end,
         settings=settings,
         output_dir=output_dir,
     )
-    report_path = download_report(
-        report_type=DEFAULT_REPORT_TYPE,
-        report_title=DEFAULT_REPORT_TITLE,
-        from_timestamp=from_timestamp,
-        to_timestamp=to_timestamp,
+    summary_report_path = download_report(
+        report_type=SUMMARY_REPORT_TYPE,
+        report_title=SUMMARY_REPORT_TITLE,
+        report_parameters=SUMMARY_REPORT_PARAMETERS,
+        interval_start=interval_start,
+        interval_end=interval_end,
+        settings=settings,
+        output_dir=output_dir,
+    )
+    payment_report_path = download_payment_report(
+        report_type=PAYMENT_REPORT_TYPE,
+        report_title=PAYMENT_REPORT_TITLE,
+        report_parameters=PAYMENT_REPORT_PARAMETERS,
+        interval_start=interval_start,
+        interval_end=interval_end,
         settings=settings,
         output_dir=output_dir,
     )
 
     print(f"Downloaded {invoice_count} invoice(s) to {output_dir}")
-    print(f"Saved report to {report_path}")
+    print(f"Saved balance summary report to {summary_report_path}")
+    print(f"Saved payment reconciliation report to {payment_report_path}")
 
 
 def load_settings() -> Settings:
@@ -213,7 +239,7 @@ def save_settings(settings: Settings) -> None:
     )
 
 
-def get_timestamps(year_month: str, tz_name: str) -> tuple[int, int]:
+def get_month_bounds(year_month: str, tz_name: str) -> tuple[int, int]:
     try:
         month, year = map(int, year_month.split("/", maxsplit=1))
     except ValueError as exc:
@@ -223,12 +249,12 @@ def get_timestamps(year_month: str, tz_name: str) -> tuple[int, int]:
         raise ValueError("Month must be between 01 and 12.")
 
     from_date = date(year, month, 1)
-    to_date = date(year, month, calendar.monthrange(year, month)[1])
+    until_date = date(year + 1, 1, 1) if month == 12 else date(year, month + 1, 1)
     tzinfo = get_timezone(tz_name)
     from_datetime = tzinfo.localize(datetime.combine(from_date, datetime.min.time()))
-    to_datetime = tzinfo.localize(datetime.combine(to_date, datetime.max.time()))
+    until_datetime = tzinfo.localize(datetime.combine(until_date, datetime.min.time()))
 
-    return int(from_datetime.timestamp()), int(to_datetime.timestamp())
+    return int(from_datetime.timestamp()), int(until_datetime.timestamp())
 
 
 def get_timezone(tz_name: str):
@@ -239,8 +265,8 @@ def get_timezone(tz_name: str):
 
 
 def download_invoices(
-    from_timestamp: int,
-    to_timestamp: int,
+    interval_start: int,
+    interval_end: int,
     settings: Settings,
     output_dir: Path,
 ) -> int:
@@ -251,8 +277,8 @@ def download_invoices(
     for invoice in client.v1.invoices.list(
         params={
             "created": {
-                "gte": from_timestamp,
-                "lte": to_timestamp,
+                "gte": interval_start,
+                "lt": interval_end,
             },
             "limit": 100,
         }
@@ -286,43 +312,154 @@ def download_invoices(
 def download_report(
     report_type: str,
     report_title: str,
-    from_timestamp: int,
-    to_timestamp: int,
+    report_parameters: dict[str, str | list[str]],
+    interval_start: int,
+    interval_end: int,
     settings: Settings,
     output_dir: Path,
 ) -> Path:
-    print(f"Creating report {report_type}")
+    report_content = fetch_report_content(
+        report_type=report_type,
+        report_parameters=report_parameters,
+        interval_start=interval_start,
+        interval_end=interval_end,
+        settings=settings,
+    )
+    target_path = build_report_path(
+        report_title=report_title,
+        interval_start=interval_start,
+        settings=settings,
+        output_dir=output_dir,
+    )
+    target_path.write_bytes(report_content)
+    return target_path
+
+
+def download_payment_report(
+    report_type: str,
+    report_title: str,
+    report_parameters: dict[str, str | list[str]],
+    interval_start: int,
+    interval_end: int,
+    settings: Settings,
+    output_dir: Path,
+) -> Path:
+    headers: list[str] | None = None
+    rows: list[dict[str, str]] = []
+
+    for category in PAYMENT_REPORT_CATEGORIES:
+        category_report_content = fetch_report_content(
+            report_type=report_type,
+            report_parameters={**report_parameters, "reporting_category": category},
+            interval_start=interval_start,
+            interval_end=interval_end,
+            settings=settings,
+            report_label=category,
+        )
+        category_headers, category_rows = parse_csv_report(category_report_content)
+        if headers is None:
+            headers = category_headers
+        elif headers != category_headers:
+            raise RuntimeError("Payment report columns did not match between charges and refunds.")
+
+        rows.extend(category_rows)
+
+    if headers is None:
+        raise RuntimeError("Payment report did not return any columns.")
+
+    rows.sort(key=lambda row: tuple((row.get(column) or "") for column in headers))
+
+    target_path = build_report_path(
+        report_title=report_title,
+        interval_start=interval_start,
+        settings=settings,
+        output_dir=output_dir,
+    )
+    write_csv_report(target_path, headers, rows)
+    return target_path
+
+
+def fetch_report_content(
+    report_type: str,
+    report_parameters: dict[str, str | list[str]],
+    interval_start: int,
+    interval_end: int,
+    settings: Settings,
+    report_label: str | None = None,
+) -> bytes:
+    report_name = f"{report_type} [{report_label}]" if report_label else report_type
+    print(f"Creating report {report_name}")
     stripe.api_key = settings.api_key
     report_run = ReportRun.create(
         report_type=report_type,
-        parameters={
-            "interval_start": from_timestamp,
-            "interval_end": to_timestamp,
-            "timezone": settings.timezone_name,
-        },
+        parameters=build_report_parameters(
+            report_parameters=report_parameters,
+            interval_start=interval_start,
+            interval_end=interval_end,
+            timezone_name=settings.timezone_name,
+        ),
     )
 
     while report_run.status != "succeeded":
         if report_run.status == "failed":
-            raise RuntimeError(f"Report {report_type} failed")
+            raise RuntimeError(f"Report {report_name} failed")
 
-        print(f"Report {report_type} is {report_run.status}")
+        print(f"Report {report_name} is {report_run.status}")
         time.sleep(5)
         report_run = ReportRun.retrieve(report_run.id)
 
-    print(f"Downloading report {report_type}")
+    print(f"Downloading report {report_name}")
     file_link = stripe.FileLink.create(file=report_run.result.id)
     response = requests.get(file_link.url, timeout=REQUEST_TIMEOUT_SECONDS)
     response.raise_for_status()
+    return response.content
 
+
+def build_report_parameters(
+    report_parameters: dict[str, str | list[str]],
+    interval_start: int,
+    interval_end: int,
+    timezone_name: str,
+) -> dict[str, int | str | list[str]]:
+    parameters: dict[str, int | str | list[str]] = {
+        "interval_start": interval_start,
+        "interval_end": interval_end,
+        "timezone": timezone_name,
+    }
+    parameters.update(report_parameters)
+    return parameters
+
+
+def build_report_path(
+    report_title: str,
+    interval_start: int,
+    settings: Settings,
+    output_dir: Path,
+) -> Path:
     tzinfo = get_timezone(settings.timezone_name)
-    month_year = datetime.fromtimestamp(to_timestamp, tzinfo).strftime("%B %Y")
+    month_year = datetime.fromtimestamp(interval_start, tzinfo).strftime("%B %Y")
     nowdate = datetime.now(tzinfo).strftime("%Y-%m-%d")
     file_name = f"{nowdate} Stripe - {report_title} {month_year}.csv"
+    return output_dir / file_name
 
-    target_path = output_dir / file_name
-    target_path.write_bytes(response.content)
-    return target_path
+
+def parse_csv_report(report_content: bytes) -> tuple[list[str], list[dict[str, str]]]:
+    reader = csv.DictReader(StringIO(report_content.decode("utf-8-sig")))
+    if reader.fieldnames is None:
+        raise RuntimeError("Downloaded report was empty.")
+
+    return reader.fieldnames, list(reader)
+
+
+def write_csv_report(
+    target_path: Path,
+    headers: list[str],
+    rows: list[dict[str, str]],
+) -> None:
+    with target_path.open("w", encoding="utf-8", newline="") as csv_file:
+        writer = csv.DictWriter(csv_file, fieldnames=headers)
+        writer.writeheader()
+        writer.writerows(rows)
 
 
 def sanitize_filename(value: str) -> str:

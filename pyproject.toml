@@ -5,7 +5,7 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "download-stripe-invoices"
 dynamic = ["version"]
-description = "CLI for downloading Stripe invoice PDFs and monthly reports."
+description = "CLI for downloading Stripe invoice PDFs and monthly reconciliation CSV reports."
 readme = "README.md"
 requires-python = ">=3.9"
 license = "MIT"
