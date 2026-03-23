@@ -248,7 +248,7 @@ def download_invoices(
     tzinfo = get_timezone(settings.timezone_name)
     downloaded = 0
 
-    for invoice in client.invoices.list(
+    for invoice in client.v1.invoices.list(
         params={
             "created": {
                 "gte": from_timestamp,
