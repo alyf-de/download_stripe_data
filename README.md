@@ -35,10 +35,12 @@ Environment variables override values from the file.
 download-stripe-invoices 01/2025
 ```
 
-Optional flags:
+This saves invoices and the report into the current directory by default.
+
+Pass a target folder as the second argument to save somewhere else:
 
 ```bash
-download-stripe-invoices 01/2025 --output-dir "~/Downloads"
+download-stripe-invoices 01/2025 "~/Downloads"
 ```
 
 The legacy local entry point still works:
@@ -46,4 +48,5 @@ The legacy local entry point still works:
 ```bash
 python main.py setup
 python main.py 01/2025
+python main.py 01/2025 "~/Downloads"
 ```

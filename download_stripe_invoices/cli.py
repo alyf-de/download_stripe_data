@@ -27,7 +27,6 @@ except AttributeError:  # pragma: no cover - compatibility with older SDK releas
 
 
 ENV_FILE = Path("~/.download-stripe-invoices/.env").expanduser()
-DEFAULT_OUTPUT_DIR = Path("~/Downloads").expanduser()
 DEFAULT_REPORT_TYPE = "balance.summary.1"
 DEFAULT_REPORT_TITLE = "Saldenübersicht"
 REQUEST_TIMEOUT_SECONDS = 60
@@ -57,10 +56,10 @@ def build_parser() -> argparse.ArgumentParser:
         help="Month to export, for example 01/2025.",
     )
     parser.add_argument(
-        "--output-dir",
+        "target_folder",
         type=Path,
-        default=DEFAULT_OUTPUT_DIR,
-        help="Directory where invoices and reports will be saved.",
+        nargs="?",
+        help="Directory where invoices and reports will be saved. Defaults to the current directory.",
     )
     return parser
 
@@ -81,7 +80,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             run_setup()
         else:
             args = build_parser().parse_args(argv)
-            run(args.year_month, output_dir=args.output_dir)
+            run(args.year_month, output_dir=args.target_folder)
     except (RuntimeError, StripeError, ValueError, requests.RequestException) as exc:
         print(f"Error: {exc}", file=sys.stderr)
         return 1
@@ -89,10 +88,10 @@ def main(argv: Sequence[str] | None = None) -> int:
     return 0
 
 
-def run(year_month: str, output_dir: Path = DEFAULT_OUTPUT_DIR) -> None:
+def run(year_month: str, output_dir: Path | None = None) -> None:
     settings = load_settings()
     from_timestamp, to_timestamp = get_timestamps(year_month, settings.timezone_name)
-    output_dir = output_dir.expanduser()
+    output_dir = output_dir.expanduser() if output_dir else Path.cwd()
     output_dir.mkdir(parents=True, exist_ok=True)
 
     invoice_count = download_invoices(
