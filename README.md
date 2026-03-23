@@ -3,13 +3,13 @@ Python CLI for downloading invoice PDFs and reports from Stripe.
 ## Install
 
 ```bash
-uv tool install .
+uv tool install https://github.com/alyf-de/download_stripe_data.git
 ```
 
-or
+Upgrade:
 
 ```bash
-pipx install .
+uv tool upgrade download-stripe-invoices
 ```
 
 ## Configure
