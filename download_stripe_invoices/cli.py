@@ -15,6 +15,7 @@ from typing import Annotated, Sequence
 import requests
 import stripe
 import typer
+from babel.dates import format_date
 from dotenv import dotenv_values
 from pytz import timezone
 from stripe import StripeClient
@@ -28,6 +29,7 @@ except AttributeError:  # pragma: no cover - compatibility with older SDK releas
 
 
 ENV_FILE = Path("~/.download-stripe-invoices/.env").expanduser()
+REPORT_LOCALE = "de_DE"
 SUMMARY_REPORT_TYPE = "balance.summary.1"
 SUMMARY_REPORT_TITLE = "Saldenübersicht"
 SUMMARY_REPORT_PARAMETERS: dict[str, str | list[str]] = {}
@@ -478,7 +480,8 @@ def build_report_path(
     output_dir: Path,
 ) -> Path:
     tzinfo = get_timezone(settings.timezone_name)
-    month_year = datetime.fromtimestamp(interval_start, tzinfo).strftime("%B %Y")
+    report_month = datetime.fromtimestamp(interval_start, tzinfo).date()
+    month_year = format_date(report_month, format="LLLL yyyy", locale=REPORT_LOCALE)
     nowdate = datetime.now(tzinfo).strftime("%Y-%m-%d")
     file_name = f"{nowdate} Stripe - {report_title} {month_year}.csv"
     return output_dir / file_name
