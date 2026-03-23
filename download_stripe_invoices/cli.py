@@ -265,11 +265,12 @@ def download_invoices(
         if not invoice_timestamp:
             continue
 
+        company_name = invoice.get("account_name") or "Unknown company"
         customer_name = sanitize_filename(invoice.get("customer_name") or "Unknown customer")
         invoice_number = sanitize_filename(invoice.get("number") or invoice["id"])
         invoice_isodate = datetime.fromtimestamp(invoice_timestamp, tzinfo).date().isoformat()
         file_name = (
-            f"{invoice_isodate} ALYF GmbH - {customer_name} - Rechnung {invoice_number}.pdf"
+            f"{invoice_isodate} {company_name} - {customer_name} - Rechnung {invoice_number}.pdf"
         )
 
         response = requests.get(pdf_url, timeout=REQUEST_TIMEOUT_SECONDS)
@@ -317,7 +318,7 @@ def download_report(
     tzinfo = get_timezone(settings.timezone_name)
     month_year = datetime.fromtimestamp(to_timestamp, tzinfo).strftime("%B %Y")
     nowdate = datetime.now(tzinfo).strftime("%Y-%m-%d")
-    file_name = f"{nowdate} Stripe Payments Europe Ltd - {report_title} - {month_year}.csv"
+    file_name = f"{nowdate} Stripe - {report_title} {month_year}.csv"
 
     target_path = output_dir / file_name
     target_path.write_bytes(response.content)
