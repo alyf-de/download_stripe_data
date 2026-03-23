@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import argparse
 import calendar
 import os
 import sys
@@ -9,10 +8,11 @@ from dataclasses import dataclass
 from datetime import date, datetime
 from getpass import getpass
 from pathlib import Path
-from typing import Sequence
+from typing import Annotated, Sequence
 
 import requests
 import stripe
+import typer
 from dotenv import dotenv_values
 from pytz import timezone
 from stripe import StripeClient
@@ -38,54 +38,79 @@ class Settings:
     api_key: str
 
 
-def build_parser() -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser(
-        prog="download-stripe-invoices",
-        description="Download Stripe invoice PDFs and monthly reports.",
-        epilog=f"Other commands:\n  setup    Create or update {ENV_FILE}",
-        formatter_class=argparse.RawDescriptionHelpFormatter,
-    )
-    parser.add_argument(
-        "--version",
-        action="version",
-        version=f"%(prog)s {__version__}",
-    )
-    parser.add_argument(
-        "year_month",
-        metavar="MM/YYYY",
-        help="Month to export, for example 01/2025.",
-    )
-    parser.add_argument(
-        "target_folder",
-        type=Path,
-        nargs="?",
-        help="Directory where invoices and reports will be saved. Defaults to the current directory.",
-    )
-    return parser
+app = typer.Typer(
+    add_completion=False,
+    no_args_is_help=True,
+    context_settings={"help_option_names": ["-h", "--help"]},
+    rich_markup_mode="markdown",
+    help=(
+        "Download Stripe invoice PDFs and monthly reports.\n\n"
+        "Use `download` to export a month and `setup` to manage local credentials."
+    ),
+)
 
 
-def build_setup_parser() -> argparse.ArgumentParser:
-    return argparse.ArgumentParser(
-        prog="download-stripe-invoices setup",
-        description=f"Create or update {ENV_FILE} by prompting for TIMEZONE and STRIPE_API_KEY.",
-    )
+def version_callback(value: bool) -> None:
+    if value:
+        typer.echo(f"stripe-helper {__version__}")
+        raise typer.Exit()
 
 
-def main(argv: Sequence[str] | None = None) -> int:
-    argv = list(argv) if argv is not None else sys.argv[1:]
+def exit_from_error(exc: Exception) -> None:
+    typer.echo(f"Error: {exc}", err=True)
+    raise typer.Exit(code=1)
+
+
+@app.callback()
+def cli(
+    version: Annotated[
+        bool | None,
+        typer.Option(
+            "--version",
+            callback=version_callback,
+            is_eager=True,
+            help="Show the version and exit.",
+        ),
+    ] = None,
+) -> None:
+    """CLI entrypoint for stripe-helper."""
+
+
+@app.command("download")
+def download_command(
+    year_month: Annotated[
+        str,
+        typer.Argument(
+            metavar="MM/YYYY",
+            help="Month to export, for example 01/2025.",
+        ),
+    ],
+    target_folder: Annotated[
+        Path | None,
+        typer.Argument(
+            help="Directory where invoices and reports will be saved. Defaults to the current directory.",
+        ),
+    ] = None,
+) -> None:
+    try:
+        run(year_month, output_dir=target_folder)
+    except (RuntimeError, StripeError, ValueError, requests.RequestException) as exc:
+        exit_from_error(exc)
+
+
+@app.command()
+def setup() -> None:
+    """Create or update the local Stripe configuration file."""
 
     try:
-        if argv and argv[0] == "setup":
-            build_setup_parser().parse_args(argv[1:])
-            run_setup()
-        else:
-            args = build_parser().parse_args(argv)
-            run(args.year_month, output_dir=args.target_folder)
+        run_setup()
     except (RuntimeError, StripeError, ValueError, requests.RequestException) as exc:
-        print(f"Error: {exc}", file=sys.stderr)
-        return 1
+        exit_from_error(exc)
 
-    return 0
+
+def main(argv: Sequence[str] | None = None) -> None:
+    argv = list(argv) if argv is not None else sys.argv[1:]
+    app(args=argv, prog_name="stripe-helper")
 
 
 def run(year_month: str, output_dir: Path | None = None) -> None:

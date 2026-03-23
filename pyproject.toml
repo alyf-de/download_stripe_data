@@ -14,10 +14,11 @@ dependencies = [
     "pytz",
     "requests",
     "stripe",
+    "typer",
 ]
 
 [project.scripts]
-download-stripe-invoices = "download_stripe_invoices.cli:main"
+stripe-helper = "download_stripe_invoices.cli:main"
 
 [tool.setuptools.packages.find]
 include = ["download_stripe_invoices"]

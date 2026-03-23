@@ -17,7 +17,7 @@ uv tool upgrade download-stripe-invoices
 Run the interactive setup command:
 
 ```bash
-download-stripe-invoices setup
+stripe-helper setup
 ```
 
 It prompts for `TIMEZONE` and `STRIPE_API_KEY`, then writes `~/.download-stripe-invoices/.env`:
@@ -32,7 +32,7 @@ Environment variables override values from the file.
 ## Usage
 
 ```bash
-download-stripe-invoices 01/2025
+stripe-helper download 01/2025
 ```
 
 This saves invoices and the report into the current directory by default.
@@ -40,13 +40,13 @@ This saves invoices and the report into the current directory by default.
 Pass a target folder as the second argument to save somewhere else:
 
 ```bash
-download-stripe-invoices 01/2025 "~/Downloads"
+stripe-helper download 01/2025 "~/Downloads"
 ```
 
-The legacy local entry point still works:
+The local Python entry point still works:
 
 ```bash
 python main.py setup
-python main.py 01/2025
-python main.py 01/2025 "~/Downloads"
+python main.py download 01/2025
+python main.py download 01/2025 "~/Downloads"
 ```
