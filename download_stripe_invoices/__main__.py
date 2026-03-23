@@ -1,4 +1,4 @@
-from download_stripe_invoices.cli import main
+from .cli import main
 
 
 if __name__ == "__main__":

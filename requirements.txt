@@ -1,4 +1,0 @@
-stripe
-requests
-pytz
-python-dotenv
