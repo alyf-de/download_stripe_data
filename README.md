@@ -14,14 +14,14 @@ pipx install .
 
 ## Configure
 
-Create a `.env` file in the directory where you run the command:
+Create `~/.download-stripe-invoices/.env`:
 
 ```env
 TIMEZONE=Europe/Berlin
 STRIPE_API_KEY=rk_live_***
 ```
 
-You can also point to a different file with `--env-file`, and environment variables override values from the file.
+Environment variables override values from the file.
 
 ## Usage
 
@@ -32,7 +32,7 @@ download-stripe-invoices 01/2025
 Optional flags:
 
 ```bash
-download-stripe-invoices 01/2025 --env-file "/path/to/.env" --output-dir "~/Downloads"
+download-stripe-invoices 01/2025 --output-dir "~/Downloads"
 ```
 
 The legacy local entry point still works:

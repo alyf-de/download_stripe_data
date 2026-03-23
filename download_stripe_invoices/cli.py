@@ -25,7 +25,7 @@ except AttributeError:  # pragma: no cover - compatibility with older SDK releas
     from stripe.error import StripeError  # type: ignore[attr-defined]
 
 
-DEFAULT_ENV_FILE = Path(".env")
+ENV_FILE = Path("~/.download-stripe-invoices/.env").expanduser()
 DEFAULT_OUTPUT_DIR = Path("~/Downloads").expanduser()
 DEFAULT_REPORT_TYPE = "balance.summary.1"
 DEFAULT_REPORT_TITLE = "Saldenübersicht"
@@ -54,12 +54,6 @@ def build_parser() -> argparse.ArgumentParser:
         help="Month to export, for example 01/2025.",
     )
     parser.add_argument(
-        "--env-file",
-        type=Path,
-        default=DEFAULT_ENV_FILE,
-        help="Path to a .env file with TIMEZONE and STRIPE_API_KEY.",
-    )
-    parser.add_argument(
         "--output-dir",
         type=Path,
         default=DEFAULT_OUTPUT_DIR,
@@ -72,7 +66,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
 
     try:
-        run(args.year_month, env_file=args.env_file, output_dir=args.output_dir)
+        run(args.year_month, output_dir=args.output_dir)
     except (RuntimeError, StripeError, ValueError, requests.RequestException) as exc:
         print(f"Error: {exc}", file=sys.stderr)
         return 1
@@ -80,8 +74,8 @@ def main(argv: Sequence[str] | None = None) -> int:
     return 0
 
 
-def run(year_month: str, env_file: Path = DEFAULT_ENV_FILE, output_dir: Path = DEFAULT_OUTPUT_DIR) -> None:
-    settings = load_settings(env_file)
+def run(year_month: str, output_dir: Path = DEFAULT_OUTPUT_DIR) -> None:
+    settings = load_settings()
     from_timestamp, to_timestamp = get_timestamps(year_month, settings.timezone_name)
     output_dir = output_dir.expanduser()
     output_dir.mkdir(parents=True, exist_ok=True)
@@ -105,8 +99,8 @@ def run(year_month: str, env_file: Path = DEFAULT_ENV_FILE, output_dir: Path = D
     print(f"Saved report to {report_path}")
 
 
-def load_settings(env_file: Path) -> Settings:
-    config = dotenv_values(env_file) if env_file.is_file() else {}
+def load_settings() -> Settings:
+    config = dotenv_values(ENV_FILE) if ENV_FILE.is_file() else {}
     timezone_name = os.environ.get("TIMEZONE") or config.get("TIMEZONE")
     api_key = os.environ.get("STRIPE_API_KEY") or config.get("STRIPE_API_KEY")
 
@@ -119,7 +113,7 @@ def load_settings(env_file: Path) -> Settings:
     if missing:
         missing_vars = ", ".join(missing)
         raise ValueError(
-            f"Missing {missing_vars}. Set them in the environment or in {env_file}."
+            f"Missing {missing_vars}. Set them in the environment or in {ENV_FILE}."
         )
 
     return Settings(timezone_name=timezone_name, api_key=api_key)
