@@ -4,6 +4,7 @@ import csv
 import os
 import sys
 import time
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass
 from datetime import date, datetime
 from getpass import getpass
@@ -17,7 +18,6 @@ import typer
 from dotenv import dotenv_values
 from pytz import timezone
 from stripe import StripeClient
-from stripe.reporting import ReportRun
 
 from . import __version__
 
@@ -44,6 +44,7 @@ PAYMENT_REPORT_PARAMETERS = {
         "gross",
     ],
 }
+INVOICE_DOWNLOAD_WORKERS = 4
 REQUEST_TIMEOUT_SECONDS = 60
 
 
@@ -51,6 +52,13 @@ REQUEST_TIMEOUT_SECONDS = 60
 class Settings:
     timezone_name: str
     api_key: str
+
+
+@dataclass(frozen=True)
+class InvoiceDownloadTask:
+    invoice_number: str
+    pdf_url: str
+    target_path: Path
 
 
 app = typer.Typer(
@@ -134,30 +142,39 @@ def run(year_month: str, output_dir: Path | None = None) -> None:
     output_dir = output_dir.expanduser() if output_dir else Path.cwd()
     output_dir.mkdir(parents=True, exist_ok=True)
 
-    invoice_count = download_invoices(
-        interval_start=interval_start,
-        interval_end=interval_end,
-        settings=settings,
-        output_dir=output_dir,
-    )
-    summary_report_path = download_report(
-        report_type=SUMMARY_REPORT_TYPE,
-        report_title=SUMMARY_REPORT_TITLE,
-        report_parameters=SUMMARY_REPORT_PARAMETERS,
-        interval_start=interval_start,
-        interval_end=interval_end,
-        settings=settings,
-        output_dir=output_dir,
-    )
-    payment_report_path = download_payment_report(
-        report_type=PAYMENT_REPORT_TYPE,
-        report_title=PAYMENT_REPORT_TITLE,
-        report_parameters=PAYMENT_REPORT_PARAMETERS,
-        interval_start=interval_start,
-        interval_end=interval_end,
-        settings=settings,
-        output_dir=output_dir,
-    )
+    # The monthly invoice export and both report exports are independent, so run them together.
+    with ThreadPoolExecutor(max_workers=3) as executor:
+        invoice_future = executor.submit(
+            download_invoices,
+            interval_start=interval_start,
+            interval_end=interval_end,
+            settings=settings,
+            output_dir=output_dir,
+        )
+        summary_report_future = executor.submit(
+            download_report,
+            report_type=SUMMARY_REPORT_TYPE,
+            report_title=SUMMARY_REPORT_TITLE,
+            report_parameters=SUMMARY_REPORT_PARAMETERS,
+            interval_start=interval_start,
+            interval_end=interval_end,
+            settings=settings,
+            output_dir=output_dir,
+        )
+        payment_report_future = executor.submit(
+            download_payment_report,
+            report_type=PAYMENT_REPORT_TYPE,
+            report_title=PAYMENT_REPORT_TITLE,
+            report_parameters=PAYMENT_REPORT_PARAMETERS,
+            interval_start=interval_start,
+            interval_end=interval_end,
+            settings=settings,
+            output_dir=output_dir,
+        )
+
+        invoice_count = invoice_future.result()
+        summary_report_path = summary_report_future.result()
+        payment_report_path = payment_report_future.result()
 
     print(f"Downloaded {invoice_count} invoice(s) to {output_dir}")
     print(f"Saved balance summary report to {summary_report_path}")
@@ -272,41 +289,49 @@ def download_invoices(
 ) -> int:
     client = StripeClient(settings.api_key)
     tzinfo = get_timezone(settings.timezone_name)
-    downloaded = 0
+    futures = []
 
-    for invoice in client.v1.invoices.list(
-        params={
-            "created": {
-                "gte": interval_start,
-                "lt": interval_end,
-            },
-            "limit": 100,
-        }
-    ):
-        pdf_url = invoice.get("invoice_pdf")
-        if not pdf_url:
-            continue
+    with ThreadPoolExecutor(max_workers=INVOICE_DOWNLOAD_WORKERS) as executor:
+        for invoice in client.v1.invoices.list(
+            params={
+                "created": {
+                    "gte": interval_start,
+                    "lt": interval_end,
+                },
+                "limit": 100,
+            }
+        ):
+            pdf_url = invoice.get("invoice_pdf")
+            if not pdf_url:
+                continue
 
-        invoice_timestamp = invoice.get("effective_at") or invoice.get("created")
-        if not invoice_timestamp:
-            continue
+            invoice_timestamp = invoice.get("effective_at") or invoice.get("created")
+            if not invoice_timestamp:
+                continue
 
-        company_name = invoice.get("account_name") or "Unknown company"
-        customer_name = sanitize_filename(invoice.get("customer_name") or "Unknown customer")
-        invoice_number = sanitize_filename(invoice.get("number") or invoice["id"])
-        invoice_isodate = datetime.fromtimestamp(invoice_timestamp, tzinfo).date().isoformat()
-        file_name = (
-            f"{invoice_isodate} {company_name} - {customer_name} - Rechnung {invoice_number}.pdf"
-        )
+            company_name = invoice.get("account_name") or "Unknown company"
+            customer_name = sanitize_filename(invoice.get("customer_name") or "Unknown customer")
+            invoice_number = sanitize_filename(invoice.get("number") or invoice["id"])
+            invoice_isodate = datetime.fromtimestamp(invoice_timestamp, tzinfo).date().isoformat()
+            file_name = (
+                f"{invoice_isodate} {company_name} - {customer_name} - Rechnung {invoice_number}.pdf"
+            )
+            task = InvoiceDownloadTask(
+                invoice_number=invoice_number,
+                pdf_url=pdf_url,
+                target_path=output_dir / file_name,
+            )
+            futures.append(executor.submit(download_invoice_file, task))
 
-        response = requests.get(pdf_url, timeout=REQUEST_TIMEOUT_SECONDS)
-        response.raise_for_status()
+        return sum(future.result() for future in as_completed(futures))
 
-        target_path = output_dir / file_name
-        target_path.write_bytes(response.content)
-        downloaded += 1
 
-    return downloaded
+def download_invoice_file(task: InvoiceDownloadTask) -> int:
+    print(f"Downloading invoice {task.invoice_number}")
+    response = requests.get(task.pdf_url, timeout=REQUEST_TIMEOUT_SECONDS)
+    response.raise_for_status()
+    task.target_path.write_bytes(response.content)
+    return 1
 
 
 def download_report(
@@ -347,15 +372,22 @@ def download_payment_report(
     headers: list[str] | None = None
     rows: list[dict[str, str]] = []
 
+    with ThreadPoolExecutor(max_workers=len(PAYMENT_REPORT_CATEGORIES)) as executor:
+        category_futures = {
+            category: executor.submit(
+                fetch_report_content,
+                report_type=report_type,
+                report_parameters={**report_parameters, "reporting_category": category},
+                interval_start=interval_start,
+                interval_end=interval_end,
+                settings=settings,
+                report_label=category,
+            )
+            for category in PAYMENT_REPORT_CATEGORIES
+        }
+
     for category in PAYMENT_REPORT_CATEGORIES:
-        category_report_content = fetch_report_content(
-            report_type=report_type,
-            report_parameters={**report_parameters, "reporting_category": category},
-            interval_start=interval_start,
-            interval_end=interval_end,
-            settings=settings,
-            report_label=category,
-        )
+        category_report_content = category_futures[category].result()
         category_headers, category_rows = parse_csv_report(category_report_content)
         if headers is None:
             headers = category_headers
@@ -389,15 +421,17 @@ def fetch_report_content(
 ) -> bytes:
     report_name = f"{report_type} [{report_label}]" if report_label else report_type
     print(f"Creating report {report_name}")
-    stripe.api_key = settings.api_key
-    report_run = ReportRun.create(
-        report_type=report_type,
-        parameters=build_report_parameters(
-            report_parameters=report_parameters,
-            interval_start=interval_start,
-            interval_end=interval_end,
-            timezone_name=settings.timezone_name,
-        ),
+    client = StripeClient(settings.api_key)
+    report_run = client.v1.reporting.report_runs.create(
+        {
+            "report_type": report_type,
+            "parameters": build_report_parameters(
+                report_parameters=report_parameters,
+                interval_start=interval_start,
+                interval_end=interval_end,
+                timezone_name=settings.timezone_name,
+            ),
+        }
     )
 
     while report_run.status != "succeeded":
@@ -406,11 +440,18 @@ def fetch_report_content(
 
         print(f"Report {report_name} is {report_run.status}")
         time.sleep(5)
-        report_run = ReportRun.retrieve(report_run.id)
+        report_run = client.v1.reporting.report_runs.retrieve(report_run.id)
 
     print(f"Downloading report {report_name}")
-    file_link = stripe.FileLink.create(file=report_run.result.id)
-    response = requests.get(file_link.url, timeout=REQUEST_TIMEOUT_SECONDS)
+    result_url = report_run.result.url if report_run.result else None
+    if not result_url:
+        raise RuntimeError(f"Report {report_name} did not provide a download URL.")
+
+    response = requests.get(
+        result_url,
+        auth=(settings.api_key, ""),
+        timeout=REQUEST_TIMEOUT_SECONDS,
+    )
     response.raise_for_status()
     return response.content
 
