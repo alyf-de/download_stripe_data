@@ -149,7 +149,7 @@ def run(year_month: str, output_dir: Path | None = None) -> None:
     # Reports are slow batch jobs on Stripe's side (often a few minutes), so wrap the polling
     # threads in a shared Progress to show a live spinner instead of repeated "pending" prints.
     with Progress(
-        SpinnerColumn(),
+        SpinnerColumn(finished_text="[green]✓[/green]"),
         TextColumn("{task.description}"),
         TimeElapsedColumn(),
     ) as progress:
@@ -473,9 +473,13 @@ def fetch_report_content(
             timeout=REQUEST_TIMEOUT_SECONDS,
         )
         response.raise_for_status()
-        return response.content
-    finally:
-        progress.remove_task(task_id)
+        content = response.content
+    except Exception:
+        progress.update(task_id, description=f"[red]Failed {report_name}[/red]", total=1, completed=1)
+        raise
+
+    progress.update(task_id, description=f"Downloaded {report_name}", total=1, completed=1)
+    return content
 
 
 def build_report_parameters(
