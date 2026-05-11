@@ -303,17 +303,17 @@ def download_invoices(
                 "limit": 100,
             }
         ):
-            pdf_url = invoice.get("invoice_pdf")
+            pdf_url = getattr(invoice, "invoice_pdf", None)
             if not pdf_url:
                 continue
 
-            invoice_timestamp = invoice.get("effective_at") or invoice.get("created")
+            invoice_timestamp = getattr(invoice, "effective_at", None) or getattr(invoice, "created", None)
             if not invoice_timestamp:
                 continue
 
-            company_name = invoice.get("account_name") or "Unknown company"
-            customer_name = sanitize_filename(invoice.get("customer_name") or "Unknown customer")
-            invoice_number = sanitize_filename(invoice.get("number") or invoice["id"])
+            company_name = getattr(invoice, "account_name", None) or "Unknown company"
+            customer_name = sanitize_filename(getattr(invoice, "customer_name", None) or "Unknown customer")
+            invoice_number = sanitize_filename(getattr(invoice, "number", None) or invoice.id)
             invoice_isodate = datetime.fromtimestamp(invoice_timestamp, tzinfo).date().isoformat()
             file_name = (
                 f"{invoice_isodate} {company_name} - {customer_name} - Rechnung {invoice_number}.pdf"
