@@ -18,6 +18,7 @@ import typer
 from babel.dates import format_date
 from dotenv import dotenv_values
 from pytz import timezone
+from rich.progress import Progress, SpinnerColumn, TextColumn, TimeElapsedColumn
 from stripe import StripeClient
 
 from . import __version__
@@ -145,38 +146,50 @@ def run(year_month: str, output_dir: Path | None = None) -> None:
     output_dir.mkdir(parents=True, exist_ok=True)
 
     # The monthly invoice export and both report exports are independent, so run them together.
-    with ThreadPoolExecutor(max_workers=3) as executor:
-        invoice_future = executor.submit(
-            download_invoices,
-            interval_start=interval_start,
-            interval_end=interval_end,
-            settings=settings,
-            output_dir=output_dir,
+    # Reports are slow batch jobs on Stripe's side (often a few minutes), so wrap the polling
+    # threads in a shared Progress to show a live spinner instead of repeated "pending" prints.
+    with Progress(
+        SpinnerColumn(),
+        TextColumn("{task.description}"),
+        TimeElapsedColumn(),
+    ) as progress:
+        progress.console.print(
+            "Generating Stripe reports. This can take several minutes."
         )
-        summary_report_future = executor.submit(
-            download_report,
-            report_type=SUMMARY_REPORT_TYPE,
-            report_title=SUMMARY_REPORT_TITLE,
-            report_parameters=SUMMARY_REPORT_PARAMETERS,
-            interval_start=interval_start,
-            interval_end=interval_end,
-            settings=settings,
-            output_dir=output_dir,
-        )
-        payment_report_future = executor.submit(
-            download_payment_report,
-            report_type=PAYMENT_REPORT_TYPE,
-            report_title=PAYMENT_REPORT_TITLE,
-            report_parameters=PAYMENT_REPORT_PARAMETERS,
-            interval_start=interval_start,
-            interval_end=interval_end,
-            settings=settings,
-            output_dir=output_dir,
-        )
+        with ThreadPoolExecutor(max_workers=3) as executor:
+            invoice_future = executor.submit(
+                download_invoices,
+                interval_start=interval_start,
+                interval_end=interval_end,
+                settings=settings,
+                output_dir=output_dir,
+            )
+            summary_report_future = executor.submit(
+                download_report,
+                report_type=SUMMARY_REPORT_TYPE,
+                report_title=SUMMARY_REPORT_TITLE,
+                report_parameters=SUMMARY_REPORT_PARAMETERS,
+                interval_start=interval_start,
+                interval_end=interval_end,
+                settings=settings,
+                output_dir=output_dir,
+                progress=progress,
+            )
+            payment_report_future = executor.submit(
+                download_payment_report,
+                report_type=PAYMENT_REPORT_TYPE,
+                report_title=PAYMENT_REPORT_TITLE,
+                report_parameters=PAYMENT_REPORT_PARAMETERS,
+                interval_start=interval_start,
+                interval_end=interval_end,
+                settings=settings,
+                output_dir=output_dir,
+                progress=progress,
+            )
 
-        invoice_count = invoice_future.result()
-        summary_report_path = summary_report_future.result()
-        payment_report_path = payment_report_future.result()
+            invoice_count = invoice_future.result()
+            summary_report_path = summary_report_future.result()
+            payment_report_path = payment_report_future.result()
 
     print(f"Downloaded {invoice_count} invoice(s) to {output_dir}")
     print(f"Saved balance summary report to {summary_report_path}")
@@ -344,6 +357,7 @@ def download_report(
     interval_end: int,
     settings: Settings,
     output_dir: Path,
+    progress: Progress,
 ) -> Path:
     report_content = fetch_report_content(
         report_type=report_type,
@@ -351,6 +365,7 @@ def download_report(
         interval_start=interval_start,
         interval_end=interval_end,
         settings=settings,
+        progress=progress,
     )
     target_path = build_report_path(
         report_title=report_title,
@@ -370,6 +385,7 @@ def download_payment_report(
     interval_end: int,
     settings: Settings,
     output_dir: Path,
+    progress: Progress,
 ) -> Path:
     headers: list[str] | None = None
     rows: list[dict[str, str]] = []
@@ -384,6 +400,7 @@ def download_payment_report(
                 interval_end=interval_end,
                 settings=settings,
                 report_label=category,
+                progress=progress,
             )
             for category in PAYMENT_REPORT_CATEGORIES
         }
@@ -419,43 +436,46 @@ def fetch_report_content(
     interval_start: int,
     interval_end: int,
     settings: Settings,
+    progress: Progress,
     report_label: str | None = None,
 ) -> bytes:
     report_name = f"{report_type} [{report_label}]" if report_label else report_type
-    print(f"Creating report {report_name}")
-    client = StripeClient(settings.api_key)
-    report_run = client.v1.reporting.report_runs.create(
-        {
-            "report_type": report_type,
-            "parameters": build_report_parameters(
-                report_parameters=report_parameters,
-                interval_start=interval_start,
-                interval_end=interval_end,
-                timezone_name=settings.timezone_name,
-            ),
-        }
-    )
+    task_id = progress.add_task(f"Generating {report_name}", total=None)
+    try:
+        client = StripeClient(settings.api_key)
+        report_run = client.v1.reporting.report_runs.create(
+            {
+                "report_type": report_type,
+                "parameters": build_report_parameters(
+                    report_parameters=report_parameters,
+                    interval_start=interval_start,
+                    interval_end=interval_end,
+                    timezone_name=settings.timezone_name,
+                ),
+            }
+        )
 
-    while report_run.status != "succeeded":
-        if report_run.status == "failed":
-            raise RuntimeError(f"Report {report_name} failed")
+        while report_run.status != "succeeded":
+            if report_run.status == "failed":
+                raise RuntimeError(f"Report {report_name} failed")
 
-        print(f"Report {report_name} is {report_run.status}")
-        time.sleep(5)
-        report_run = client.v1.reporting.report_runs.retrieve(report_run.id)
+            time.sleep(5)
+            report_run = client.v1.reporting.report_runs.retrieve(report_run.id)
 
-    print(f"Downloading report {report_name}")
-    result_url = report_run.result.url if report_run.result else None
-    if not result_url:
-        raise RuntimeError(f"Report {report_name} did not provide a download URL.")
+        progress.update(task_id, description=f"Downloading {report_name}")
+        result_url = report_run.result.url if report_run.result else None
+        if not result_url:
+            raise RuntimeError(f"Report {report_name} did not provide a download URL.")
 
-    response = requests.get(
-        result_url,
-        auth=(settings.api_key, ""),
-        timeout=REQUEST_TIMEOUT_SECONDS,
-    )
-    response.raise_for_status()
-    return response.content
+        response = requests.get(
+            result_url,
+            auth=(settings.api_key, ""),
+            timeout=REQUEST_TIMEOUT_SECONDS,
+        )
+        response.raise_for_status()
+        return response.content
+    finally:
+        progress.remove_task(task_id)
 
 
 def build_report_parameters(
