@@ -163,6 +163,7 @@ def run(year_month: str, output_dir: Path | None = None) -> None:
                 interval_end=interval_end,
                 settings=settings,
                 output_dir=output_dir,
+                progress=progress,
             )
             summary_report_future = executor.submit(
                 download_report,
@@ -301,48 +302,70 @@ def download_invoices(
     interval_end: int,
     settings: Settings,
     output_dir: Path,
+    progress: Progress,
 ) -> int:
     client = StripeClient(settings.api_key)
     tzinfo = get_timezone(settings.timezone_name)
     futures = []
 
-    with ThreadPoolExecutor(max_workers=INVOICE_DOWNLOAD_WORKERS) as executor:
-        for invoice in client.v1.invoices.list(
-            params={
-                "created": {
-                    "gte": interval_start,
-                    "lt": interval_end,
-                },
-                "limit": 100,
-            }
-        ):
-            pdf_url = getattr(invoice, "invoice_pdf", None)
-            if not pdf_url:
-                continue
+    task_id = progress.add_task("Listing invoices", total=None)
+    try:
+        with ThreadPoolExecutor(max_workers=INVOICE_DOWNLOAD_WORKERS) as executor:
+            for invoice in client.v1.invoices.list(
+                params={
+                    "created": {
+                        "gte": interval_start,
+                        "lt": interval_end,
+                    },
+                    "limit": 100,
+                }
+            ):
+                pdf_url = getattr(invoice, "invoice_pdf", None)
+                if not pdf_url:
+                    continue
 
-            invoice_timestamp = getattr(invoice, "effective_at", None) or getattr(invoice, "created", None)
-            if not invoice_timestamp:
-                continue
+                invoice_timestamp = getattr(invoice, "effective_at", None) or getattr(invoice, "created", None)
+                if not invoice_timestamp:
+                    continue
 
-            company_name = getattr(invoice, "account_name", None) or "Unknown company"
-            customer_name = sanitize_filename(getattr(invoice, "customer_name", None) or "Unknown customer")
-            invoice_number = sanitize_filename(getattr(invoice, "number", None) or invoice.id)
-            invoice_isodate = datetime.fromtimestamp(invoice_timestamp, tzinfo).date().isoformat()
-            file_name = (
-                f"{invoice_isodate} {company_name} - {customer_name} - Rechnung {invoice_number}.pdf"
-            )
-            task = InvoiceDownloadTask(
-                invoice_number=invoice_number,
-                pdf_url=pdf_url,
-                target_path=output_dir / file_name,
-            )
-            futures.append(executor.submit(download_invoice_file, task))
+                company_name = getattr(invoice, "account_name", None) or "Unknown company"
+                customer_name = sanitize_filename(getattr(invoice, "customer_name", None) or "Unknown customer")
+                invoice_number = sanitize_filename(getattr(invoice, "number", None) or invoice.id)
+                invoice_isodate = datetime.fromtimestamp(invoice_timestamp, tzinfo).date().isoformat()
+                file_name = (
+                    f"{invoice_isodate} {company_name} - {customer_name} - Rechnung {invoice_number}.pdf"
+                )
+                task = InvoiceDownloadTask(
+                    invoice_number=invoice_number,
+                    pdf_url=pdf_url,
+                    target_path=output_dir / file_name,
+                )
+                futures.append(executor.submit(download_invoice_file, task))
 
-        return sum(future.result() for future in as_completed(futures))
+            total = len(futures)
+            completed = 0
+            progress.update(task_id, description=f"Downloading invoices (0/{total})", total=total)
+            for future in as_completed(futures):
+                completed += future.result()
+                progress.update(
+                    task_id,
+                    description=f"Downloading invoices ({completed}/{total})",
+                    completed=completed,
+                )
+    except Exception:
+        progress.update(task_id, description="[red]Failed downloading invoices[/red]", total=1, completed=1)
+        raise
+
+    progress.update(
+        task_id,
+        description=f"Downloaded {completed} invoice(s)",
+        total=max(total, 1),
+        completed=max(total, 1),
+    )
+    return completed
 
 
 def download_invoice_file(task: InvoiceDownloadTask) -> int:
-    print(f"Downloading invoice {task.invoice_number}")
     response = requests.get(task.pdf_url, timeout=REQUEST_TIMEOUT_SECONDS)
     response.raise_for_status()
     task.target_path.write_bytes(response.content)
