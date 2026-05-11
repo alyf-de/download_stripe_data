@@ -311,7 +311,7 @@ def download_invoices(
     task_id = progress.add_task("Listing invoices", total=None)
     try:
         with ThreadPoolExecutor(max_workers=INVOICE_DOWNLOAD_WORKERS) as executor:
-            for invoice in client.v1.invoices.list(
+            invoice_pages = client.v1.invoices.list(
                 params={
                     "created": {
                         "gte": interval_start,
@@ -319,7 +319,8 @@ def download_invoices(
                     },
                     "limit": 100,
                 }
-            ):
+            )
+            for invoice in invoice_pages.auto_paging_iter():
                 pdf_url = getattr(invoice, "invoice_pdf", None)
                 if not pdf_url:
                     continue
